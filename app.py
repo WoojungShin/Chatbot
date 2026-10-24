@@ -32,6 +32,7 @@ from chatbot import (
     state_block,
 )
 from chatbot.client import default_model
+from chatbot.scenarios import PHASE_NAMES, SCENARIOS
 
 load_dotenv()
 ROOT = Path(__file__).parent
@@ -81,6 +82,8 @@ if "messages" not in st.session_state:
     st.session_state.intake_done = False
     st.session_state.spent = 0.0
     st.session_state.turns_used = 0
+    st.session_state.replay_step = 0
+    st.session_state.replay_idx = 0
 
 try:
     persona = load_persona(PERSONA_DIR)
@@ -88,70 +91,163 @@ except PersonaError as e:
     st.error(f"Persona 로딩 실패: {e}")
     st.stop()
 
+
+
+# ---------- 시연 재생 ----------
+def render_replay() -> None:
+    """구성한 대화를 한 턴씩 재생한다. 모델을 호출하지 않는다."""
+    st.title("시연 · 재생")
+    st.caption("같은 발화를 컨트롤러 없이 / 있게 받았을 때를 나란히 봅니다. 모델을 호출하지 않습니다.")
+
+    names = [f"{sc.name} · {sc.tag}" for sc in SCENARIOS]
+    picked = st.radio("시나리오", names, horizontal=True, key="replay_pick")
+    idx = names.index(picked)
+    if idx != st.session_state.replay_idx:
+        st.session_state.replay_idx = idx
+        st.session_state.replay_step = 0
+
+    sc = SCENARIOS[idx]
+    step = st.session_state.replay_step
+    st.info(sc.note)
+
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
+    if c1.button("다음 턴", disabled=step >= len(sc.steps), use_container_width=True):
+        st.session_state.replay_step += 1
+        st.rerun()
+    if c2.button("이전", disabled=step == 0, use_container_width=True):
+        st.session_state.replay_step -= 1
+        st.rerun()
+    if c3.button("처음부터", use_container_width=True):
+        st.session_state.replay_step = 0
+        st.rerun()
+    c4.markdown(f"**{step} / {len(sc.steps)} 턴**")
+
+    cur = sc.steps[step - 1] if step else None
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Baseline")
+        st.caption("프롬프트 한 줄, 컨트롤러 없음")
+    with right:
+        st.subheader("Controlled")
+        st.caption("원칙 11개 + phase + slot")
+
+    base_state = ConvState(slots={"relationship_type": "x", "duration": "x", "concern": "x", "goal": "x"})
+    for i in range(step):
+        stp = sc.steps[i]
+        for col, reply in ((left, stp.base), (right, stp.ctrl)):
+            with col:
+                with st.chat_message("user"):
+                    st.markdown(stp.user)
+                with st.chat_message("assistant"):
+                    st.markdown(reply)
+                    base_state.phase = Phase.S_SAFETY if stp.safety else Phase.P2_PROBE
+                    flags = check_reply(reply, base_state)
+                    if flags:
+                        for f in flags:
+                            st.warning(f, icon="⚠️")
+                    else:
+                        st.success("규칙 통과", icon="✅")
+
+    st.divider()
+    st.subheader("컨트롤러 상태")
+    phase_idx = cur.phase if cur else 0
+    badges = " ".join(
+        f"**:blue[{n}]**" if i == phase_idx else f":gray[{n}]" for i, n in enumerate(PHASE_NAMES)
+    )
+    st.markdown(badges)
+
+    slots = dict(sc.intake)
+    for i in range(step):
+        if sc.steps[i].slot:
+            k, v = sc.steps[i].slot
+            slots[k] = v
+    cols = st.columns(4)
+    for col, (k, v) in zip(cols, list(slots.items())[:4]):
+        col.metric(k, v)
+    extra = {k: v for k, v in slots.items() if k not in sc.intake}
+    if extra:
+        st.caption(" · ".join(f"{k}: {v}" for k, v in extra.items()))
+
+    q = cur.q if cur else 0
+    if cur and cur.safety:
+        st.caption("위기 감지 — 모델 호출 없이 종료")
+    else:
+        st.caption(f"P2 질문 {q}/3 · 다음 턴은 {'P3 상담' if q >= 3 else 'P2 맥락 질문'}")
+
+    st.caption("이 대화는 시연을 위해 구성한 예시입니다. 실제 모델 출력은 '직접 대화'에서 확인하세요.")
+
+
 # ---------- 사이드바 ----------
 with st.sidebar:
     st.header("설정")
-    mode = st.radio(
-        "모드",
-        ["Controlled (컨트롤러 적용)", "Baseline (컨트롤러 없음)"],
-        help="Baseline은 원칙·예시·phase 없이 일반 상담 프롬프트만 사용합니다.",
-    )
-    controlled = mode.startswith("Controlled")
-
-    api_key = secret_api_key()
-    if api_key:
-        st.caption("API key: 서버 설정에서 불러옴")
-    else:
-        api_key = st.text_input("ANTHROPIC_API_KEY", type="password")
-    model = st.selectbox(
-        "Model",
-        ["claude-sonnet-5", "claude-haiku-4-5"],
-        index=0 if default_model() != "claude-haiku-4-5" else 1,
-    )
-    max_tokens = st.number_input("Max tokens", 64, MAX_TOKENS_CAP, 512, 64)
-
-    if st.button("대화 초기화", use_container_width=True):
-        st.session_state.messages = []
-        st.session_state.state = ConvState()
-        st.session_state.flags = {}
-        st.session_state.intake_done = False
-        st.session_state.turns_used = 0
-        st.rerun()
-
+    page = st.radio("화면", ["직접 대화", "시연 · 재생"], key="page")
     st.divider()
-    cs: ConvState = st.session_state.state
-    if controlled:
-        st.subheader("컨트롤러 상태")
-        st.metric("현재 phase", cs.phase.value)
-        st.caption(f"P2 질문 {cs.probe_questions}/3 · P2 복귀 {cs.returned_to_probe}/1")
-        st.write("**slot**")
-        for k, label in INTAKE_LABELS.items():
-            st.write(f"- {label}: {cs.slots.get(k) or '—'}")
-        with st.expander("system prompt 보기"):
-            st.code(build_system_prompt(persona, state_block(cs)), language="xml")
-    else:
-        st.subheader("Baseline")
-        st.code(BASELINE_SYSTEM)
+    if page == "직접 대화":
+        mode = st.radio(
+            "모드",
+            ["Controlled (컨트롤러 적용)", "Baseline (컨트롤러 없음)"],
+            help="Baseline은 원칙·예시·phase 없이 일반 상담 프롬프트만 사용합니다.",
+        )
+        controlled = mode.startswith("Controlled")
 
-    st.divider()
-    st.subheader("사용량")
-    st.caption(
-        f"이 세션 {st.session_state.turns_used}/{MAX_TURNS}턴 · "
-        f"추정 ${st.session_state.spent:.4f} / ${SESSION_COST_CAP:.2f}"
-    )
-    st.progress(min(st.session_state.spent / SESSION_COST_CAP, 1.0))
+        api_key = secret_api_key()
+        if api_key:
+            st.caption("API key: 서버 설정에서 불러옴")
+        else:
+            api_key = st.text_input("ANTHROPIC_API_KEY", type="password")
+        model = st.selectbox(
+            "Model",
+            ["claude-sonnet-5", "claude-haiku-4-5"],
+            index=0 if default_model() != "claude-haiku-4-5" else 1,
+        )
+        max_tokens = st.number_input("Max tokens", 64, MAX_TOKENS_CAP, 512, 64)
 
-    if st.session_state.messages and st.button("대화 로그 저장", use_container_width=True):
-        LOG_DIR.mkdir(exist_ok=True)
-        name = f"{'controlled' if controlled else 'baseline'}_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
-        with (LOG_DIR / name).open("w", encoding="utf-8") as f:
-            for i, m in enumerate(st.session_state.messages):
-                row = dict(m, idx=i, mode="controlled" if controlled else "baseline")
-                if m["role"] == "assistant":
-                    row["flags"] = st.session_state.flags.get(i, [])
-                    row["phase"] = cs.phase.value
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        st.success(f"logs/{name}")
+        if st.button("대화 초기화", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.state = ConvState()
+            st.session_state.flags = {}
+            st.session_state.intake_done = False
+            st.session_state.turns_used = 0
+            st.rerun()
+
+        st.divider()
+        cs: ConvState = st.session_state.state
+        if controlled:
+            st.subheader("컨트롤러 상태")
+            st.metric("현재 phase", cs.phase.value)
+            st.caption(f"P2 질문 {cs.probe_questions}/3 · P2 복귀 {cs.returned_to_probe}/1")
+            st.write("**slot**")
+            for k, label in INTAKE_LABELS.items():
+                st.write(f"- {label}: {cs.slots.get(k) or '—'}")
+            with st.expander("system prompt 보기"):
+                st.code(build_system_prompt(persona, state_block(cs)), language="xml")
+        else:
+            st.subheader("Baseline")
+            st.code(BASELINE_SYSTEM)
+
+        st.divider()
+        st.subheader("사용량")
+        st.caption(
+            f"이 세션 {st.session_state.turns_used}/{MAX_TURNS}턴 · "
+            f"추정 ${st.session_state.spent:.4f} / ${SESSION_COST_CAP:.2f}"
+        )
+        st.progress(min(st.session_state.spent / SESSION_COST_CAP, 1.0))
+
+        if st.session_state.messages and st.button("대화 로그 저장", use_container_width=True):
+            LOG_DIR.mkdir(exist_ok=True)
+            name = f"{'controlled' if controlled else 'baseline'}_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
+            with (LOG_DIR / name).open("w", encoding="utf-8") as f:
+                for i, m in enumerate(st.session_state.messages):
+                    row = dict(m, idx=i, mode="controlled" if controlled else "baseline")
+                    if m["role"] == "assistant":
+                        row["flags"] = st.session_state.flags.get(i, [])
+                        row["phase"] = cs.phase.value
+                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            st.success(f"logs/{name}")
+
+if st.session_state.get("page") == "시연 · 재생":
+    render_replay()
+    st.stop()
 
 # ---------- 본문 ----------
 st.title("연애 상담 챗봇")
