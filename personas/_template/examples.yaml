@@ -1,0 +1,7 @@
+examples:
+  - situation: 이 예시가 다루는 상황
+    applies: [rule_1]
+    turns:
+      - user: 사용자 발화
+        assistant: 원칙을 지킨 이상적인 응답
+    note: (선택) 모델이 주목할 포인트
