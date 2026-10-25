@@ -14,6 +14,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from chatbot import (
+    note_recap_given,
     BASELINE_SYSTEM,
     INTAKE_LABELS,
     INTAKE_SLOTS,
@@ -140,7 +141,7 @@ def render_replay() -> None:
                     st.markdown(stp.user)
                 with st.chat_message("assistant"):
                     st.markdown(reply)
-                    base_state.phase = Phase.S_SAFETY if stp.safety else Phase.P2_PROBE
+                    base_state.phase = Phase.SAFETY if stp.safety else Phase.PHASE2_PROBE
                     flags = check_reply(reply, base_state)
                     if flags:
                         for f in flags:
@@ -215,7 +216,10 @@ with st.sidebar:
         if controlled:
             st.subheader("컨트롤러 상태")
             st.metric("현재 phase", cs.phase.value)
-            st.caption(f"P2 질문 {cs.probe_questions}/3 · P2 복귀 {cs.returned_to_probe}/1")
+            st.caption(
+            f"Phase2 질문 {cs.probe_questions}/3 · 복귀 {cs.returned_to_probe}/1 · "
+            f"정리 확인 {'완료' if cs.recap_confirmed else '대기'}"
+        )
             st.write("**slot**")
             for k, label in INTAKE_LABELS.items():
                 st.write(f"- {label}: {cs.slots.get(k) or '—'}")
@@ -269,7 +273,7 @@ if controlled and not st.session_state.intake_done:
                 "relationship_type": rel, "duration": dur, "concern": concern, "goal": goal,
             }
             st.session_state.intake_done = True
-            st.session_state.state.phase = Phase.P2_PROBE
+            st.session_state.state.phase = Phase.PHASE2_PROBE
             st.rerun()
     st.stop()
 
@@ -299,7 +303,7 @@ if user_input := st.chat_input("메시지를 입력하세요"):
     # 위기 감지는 컨트롤러 모드에서만 작동한다 (baseline과의 차이를 보여주는 지점)
     if controlled:
         advance(cs, user_input)
-        if cs.phase is Phase.S_SAFETY:
+        if cs.phase is Phase.SAFETY:
             with st.chat_message("assistant"):
                 st.markdown(SAFETY_REPLY)
             st.session_state.messages.append({"role": "assistant", "content": SAFETY_REPLY})
@@ -331,5 +335,6 @@ if user_input := st.chat_input("메시지를 입력하세요"):
     if client.last_usage:
         st.session_state.spent += estimate_cost(model, client.last_usage)
     if controlled:
+        note_recap_given(cs, reply)
         note_question_asked(cs, reply)
     st.rerun()

@@ -59,10 +59,22 @@ streamlit run app.py
 
 - `personas/relationship_counselor/` — 원칙 11개(P0~P10)와 예시 4개
 - `chatbot/controller.py` — phase state machine, slot, 위기 감지, 응답 규칙 검사
-- 사이드바에서 **Baseline / Controlled** 전환, phase·slot·system prompt 확인, 대화 로그 JSONL 저장
+- 사이드바 **화면**에서 두 모드 선택
+  - **직접 대화** — 실제 모델 호출. Baseline / Controlled 전환, phase·slot·system prompt 확인, 대화 로그 JSONL 저장
+  - **시연 · 재생** — 구성한 대화를 한 턴씩 재생. 모델을 호출하지 않아 API key 없이도 동작 (`chatbot/scenarios.py`)
 
-phase 전이: P1(폼, LLM 호출 없음) → P2(질문 1개씩, 최대 3회) → P3(상담) → S(위기 시 안전 종료).
-P3에서 충돌하는 사실이 나오면 P2로 1회 복귀한다.
+Phase 전이: Phase1(폼, LLM 호출 없음) → Phase2(질문 1개씩, 최대 3회) → **Phase2R(정리 확인)** → Phase3(상담) → S(위기 시 안전 종료).
+Phase3에서 충돌하는 사실이 나오면 Phase2로 1회 복귀한다. 단계는 Phase, 대화 규칙은 P0~P10으로 구분해서 쓴다.
+
+### P4 — 정리 확인 (Phase2R)
+
+조언 전에 들은 내용을 "일어난 일"과 "사용자의 해석"으로 나눠 보여주고 맞는지 묻는다. 판정은 세 가지다.
+
+1. Phase3 첫 응답 직전 턴에 정리가 있는가 — 정리 응답에 사실/해석 구분 어구가 있는지 검사
+2. 정리에 사용자가 하지 않은 말이 0개인가 — 큰따옴표 인용이 사용자 발화에 있는지 검사 (`unsupported_quotes`)
+3. 사용자가 확인한 뒤에 전이했는가 — `recap_confirmed` 없이 Phase3 응답이 나오면 위반
+
+2번은 근사 판정이다. 한국어는 인용하며 어미와 인칭이 바뀌므로("왔어요" → "왔다", "저를" → "나를") 앞부분 60%가 겹치면 같은 말로 본다. 어미만 다른 인용은 통과하고, 앞부분부터 다른 말은 잡힌다.
 
 목표는 관계 개선이 아니라 (1) 사용자의 주의를 자기 감정·자기 행동으로 옮기는 것과
 (2) 관계의 방향을 사용자가 직접 정하게 하는 것이다.
@@ -70,7 +82,7 @@ P3에서 충돌하는 사실이 나오면 P2로 1회 복귀한다.
 ## 웹 버전
 
 - `web/demo.html` — 한 페이지에 두 모드. **시연·재생**(Baseline vs Controlled, API 불필요)과 **직접 대화**(실제 호출).
-- `web/live.html` — 직접 대화만 있는 단독 버전. claude.ai 아티팩트로 배포하면 페이지가 직접 Claude를 호출한다.
+- `web/live.html` — 직접 대화만 있는 구버전 단독 페이지 (Phase2R 미반영). claude.ai 아티팩트로 배포하면 페이지가 직접 Claude를 호출한다.
   위기 신호(P0)는 모델 호출 전에 JS에서 가로채고, 응답 후 규칙 검사 결과를 칩으로 표시한다.
 
 ## Streamlit Community Cloud 배포
