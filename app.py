@@ -237,17 +237,28 @@ with st.sidebar:
         )
         st.progress(min(st.session_state.spent / SESSION_COST_CAP, 1.0))
 
-        if st.session_state.messages and st.button("대화 로그 저장", use_container_width=True):
-            LOG_DIR.mkdir(exist_ok=True)
-            name = f"{'controlled' if controlled else 'baseline'}_{datetime.now():%Y%m%d_%H%M%S}.jsonl"
-            with (LOG_DIR / name).open("w", encoding="utf-8") as f:
-                for i, m in enumerate(st.session_state.messages):
-                    row = dict(m, idx=i, mode="controlled" if controlled else "baseline")
-                    if m["role"] == "assistant":
-                        row["flags"] = st.session_state.flags.get(i, [])
-                        row["phase"] = cs.phase.value
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            st.success(f"logs/{name}")
+        if st.session_state.messages:
+            rows = []
+            for i, m in enumerate(st.session_state.messages):
+                row = dict(m, idx=i, mode="controlled" if controlled else "baseline")
+                if m["role"] == "assistant":
+                    row["flags"] = st.session_state.flags.get(i, [])
+                    row["phase"] = cs.phase.value
+                rows.append(json.dumps(row, ensure_ascii=False))
+            jsonl = "\n".join(rows) + "\n"
+            stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
+            name = f"{'controlled' if controlled else 'baseline'}_{stamp}.jsonl"
+
+            # 배포 환경에서는 서버에 저장해도 꺼낼 수 없다. 브라우저로 바로 내려받는다.
+            st.download_button(
+                "대화 로그 내려받기",
+                data=jsonl.encode("utf-8"),
+                file_name=name,
+                mime="application/x-ndjson",
+                use_container_width=True,
+            )
+            with st.expander("로그 미리보기 (복사용)"):
+                st.code(jsonl, language="json")
 
 if st.session_state.get("page") == "시연 · 재생":
     render_replay()

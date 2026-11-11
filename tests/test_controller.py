@@ -250,3 +250,55 @@ def test_real_third_party_mind_still_flagged():
     s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
     assert any("P6" in f for f in check_reply("그는 당신을 소중히 여기지 않는 것 같네요.", s))
     assert any("P6" in f for f in check_reply("상대방 마음이 식은 것 같아요.", s))
+
+
+# ---------- 팀원 Individual Reflection에서 나온 오탐 ----------
+
+def test_question_form_is_not_prescription():
+    """P9 — "기억하세요?"는 되묻는 질문이지 처방이 아니다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert check_reply("3개월 동안 반복됐다고 하셨죠. 가장 최근 다툼은 언제였는지 기억하세요?", s) == []
+
+
+def test_quoted_prescription_is_not_counted():
+    """사용자가 받은 말을 인용한 것은 챗봇의 처방이 아니다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = '늘 그랬다고 하셨는데, "그냥 헤어지세요"라는 말을 들으신 거네요. 그 말을 듣고 어떠셨어요?'
+    assert not any("P9" in f for f in check_reply(r, s))
+
+
+THREE_COLUMN_RECAP = (
+    '정리해 볼게요. 일어난 일은 "2주 전부터 연락이 하루 10번 이상에서 서너 번으로 줄었다", '
+    '"만나면 평소와 비슷하다"예요. 느낀 마음은 불안하고 서운한 쪽이고, '
+    '"저한테 질린 것 같다"는 떠오른 생각이고요. 제가 잘못 나눈 게 있을까요?'
+)
+THREE_COLUMN_SAID = [
+    "2주 전부터 연락이 하루 10번 이상에서 서너 번으로 줄었어요",
+    "만나면 평소와 비슷해요",
+    "저한테 질린 것 같아요",
+]
+
+
+def test_three_column_recap_passes():
+    """P4 — '떠오른 생각'도 해석 칸으로 인정한다."""
+    s = controlled_state(phase=Phase.PHASE2R_RECAP, said=list(THREE_COLUMN_SAID))
+    assert check_reply(THREE_COLUMN_RECAP, s) == []
+
+
+def test_recap_quoting_user_interpretation_is_not_p6():
+    """P4가 요구하는 인용이 P6(상대 내면 서술)로 잡히지 않는다."""
+    s = controlled_state(phase=Phase.PHASE2R_RECAP, said=list(THREE_COLUMN_SAID))
+    assert not any("P6" in f for f in check_reply(THREE_COLUMN_RECAP, s))
+
+
+def test_concrete_wording_help_is_allowed():
+    """P10 — 방법에 관한 조언은 위반이 아니다. 방향 결정만 사용자에게 남긴다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = ('말을 꺼내실 거라면 이런 문장도 있어요. "요즘 연락이 줄어든 게 신경 쓰여. '
+         '무슨 일 있어?" 이렇게 쓰실지는 보시고 정하세요.')
+    assert not any("P10" in f for f in check_reply(r, s))
+
+
+def test_relationship_direction_still_flagged():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert any("P10" in f for f in check_reply("연락을 끊는 게 맞습니다.", s))

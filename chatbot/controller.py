@@ -71,7 +71,7 @@ THIRD_PARTY_MIND = [
 
 # P4: 정리 응답이 갖춰야 할 구조 — "일어난 일"과 "해석"을 나눈 흔적
 RECAP_FACT_MARKERS = [r"일어난\s*일", r"사실", r"확인된"]
-RECAP_INTERP_MARKERS = [r"해석", r"받아들", r"느끼신", r"생각하신", r"보신"]
+RECAP_INTERP_MARKERS = [r"해석", r"받아들", r"느끼신", r"생각", r"보신", r"느낀\s*마음", r"떠오른"]
 RECAP_ASK_MARKERS = [r"맞(나요|을까요|습니까|는지)", r"잘못\s*나눈", r"빠뜨린", r"틀린\s*게", r"고칠\s*게"]
 
 # Phase2R에서 사용자가 정리를 받아들였는지 판정
@@ -181,14 +181,20 @@ PHASE_DIRECTIVE = {
     ),
     Phase.PHASE2R_RECAP: (
         "조언하기 전에 들은 내용을 정리해 확인받는 단계다. 조언을 시작하지 않는다.\n"
-        "지금까지 들은 것을 '일어난 일'과 '사용자가 받아들인 해석' 두 묶음으로 나눠 보여준다.\n"
-        "사용자가 하지 않은 말은 한 마디도 넣지 않는다. 사용자의 표현을 쓸 때는 큰따옴표로 인용한다.\n"
+        "지금까지 들은 것을 '일어난 일', '느낀 마음', '떠오른 생각' 세 묶음으로 나눠 보여준다.\n"
+        "'쯤', '정도', '~것 같다' 같은 완충 표현을 지우고 확정형으로 바꾸지 않는다.\n"
+        "큰따옴표 안에 넣는 말은 아래 '사용자가 실제로 한 말'에서 글자 그대로 복사한다. "
+        "조사나 어미를 바꾸지 않는다('보통은'을 '평소엔'으로 바꾸지 않는다). "
+        "그대로 옮기기 어려우면 따옴표 없이 풀어 쓴다.\n"
         "마지막에 잘못 나누거나 빠뜨린 게 있는지 한 번 묻고 멈춘다."
     ),
     Phase.PHASE3_ADVISE: (
         "사용자가 정리를 확인했다. 확인된 사실과 확인되지 않은 것을 구분해 말한 뒤, "
         "사용자 자신의 감정과 사용자가 할 수 있는 행동으로 초점을 옮긴다. "
-        "관계를 어느 방향으로 가져갈지는 제안하지 않는다. 과거 이력을 근거로 행동을 처방하지 않는다."
+        "관계를 어느 방향으로 가져갈지는 제안하지 않는다. 과거 이력을 근거로 행동을 처방하지 않는다.\n"
+        "다만 사용자가 이미 하기로 정한 일의 '방법'을 물으면 되묻지 말고 구체적으로 돕는다. "
+        "말을 어떻게 꺼낼지 물으면 실제로 쓸 수 있는 문장을 한두 개 제안하고, "
+        "그 문장을 쓸지 말지는 사용자가 정하게 한다."
     ),
     Phase.SAFETY: "위기 신호가 감지되었다. 상담을 중단하고 기관 안내만 한다.",
 }
@@ -216,7 +222,7 @@ def state_block(state: ConvState) -> str:
         "확인되지 않은 정보는 '확인되지 않음'으로 다루고 단정하지 않는다.",
     ]
     if state.phase is Phase.PHASE2R_RECAP:
-        lines.append("사용자가 실제로 한 말(이 안에서만 인용할 것):")
+        lines.append("사용자가 실제로 한 말 — 큰따옴표 인용은 여기서 글자 그대로 복사할 것:")
         for t in state.said:
             lines.append(f"- {t}")
     lines.append("</state>")
@@ -277,6 +283,8 @@ def unsupported_quotes(reply: str, said: list[str]) -> list[str]:
 # 단정·내면 서술 판정을 문맥으로 좁히는 보조 패턴
 GUESS_TARGET = [r"마음", r"의도", r"생각", r"감정", r"무시", r"사랑", r"식었", r"일부러"]
 UNKNOWN_MARKERS = [r"알\s*수\s*없", r"확인(되지|된\s*게)\s*(않|아니)", r"모르", r"인지보다", r"아직\s*확인"]
+# 사용자의 말이라고 표시한 문장 — P4 정리 턴은 이 형태를 써야 하므로 P6에서 제외한다
+ATTRIBUTION_MARKERS = [r"떠오른", r"드신\s*생각", r"받아들", r"해석", r"하신\s*말", r"그려보신", r"느끼신", r"생각이", r"예상"]
 
 
 def _sentence_at(text: str, idx: int) -> str:
@@ -285,26 +293,65 @@ def _sentence_at(text: str, idx: int) -> str:
     return text[start : (min(ends) if ends else len(text))]
 
 
+def _is_question_sentence(text: str, idx: int) -> bool:
+    """idx가 속한 문장이 물음표로 끝나는가."""
+    ends = [(p, text[p]) for p in (text.find(ch, idx) for ch in ".!?\n") if p != -1]
+    if not ends:
+        return text.rstrip().endswith(("?", "？"))
+    return min(ends)[1] == "?"
+
+
 def _asserts_about_guess(reply: str) -> bool:
     """'분명/확실히'가 같은 문장 안에서 내면·추측을 수식할 때만 단정으로 본다.
 
     사실에 붙은 경우("평소와는 확실히 다른 상황이네요")는 위반으로 보지 않는다.
     """
-    for m in re.finditer("|".join(ASSERTION_PATTERNS), reply):
-        sent = _sentence_at(reply, m.start())
+    bare = strip_quotes(reply)
+    for m in re.finditer("|".join(ASSERTION_PATTERNS), bare):
+        sent = _sentence_at(bare, m.start())
         if any(re.search(t, sent) for t in GUESS_TARGET):
             return True
     return False
 
 
 def _states_third_party_mind(reply: str) -> bool:
-    """상대방의 내면을 서술하는 문장. 모른다고 밝히는 문장은 제외한다."""
+    """상대방의 내면을 서술하는 문장만 잡는다.
+
+    제외하는 경우가 둘 있다.
+    - 모른다고 밝히는 문장("아직 확인된 게 아니에요")
+    - 사용자의 말이라고 표시해 인용한 문장(P4 정리 턴이 반드시 쓰는 형태)
+    인용부호 안의 내용은 사용자 발화이므로 검사 대상이 아니다.
+    """
+    bare = strip_quotes(reply)
     for pat in THIRD_PARTY_MIND:
-        for m in re.finditer(pat, reply):
-            window = reply[max(0, m.start() - 20) : m.end() + 40]
-            if not any(re.search(u, window) for u in UNKNOWN_MARKERS):
-                return True
+        for m in re.finditer(pat, bare):
+            sent = _sentence_at(bare, m.start())
+            window = bare[max(0, m.start() - 20) : m.end() + 40]
+            if any(re.search(u, window) for u in UNKNOWN_MARKERS):
+                continue
+            if any(re.search(a, sent) for a in ATTRIBUTION_MARKERS):
+                continue
+            return True
     return False
+
+
+def _prescribes(reply: str) -> bool:
+    """행동을 처방하는 문장이 있는가. 질문문과 인용은 제외한다.
+
+    "가장 최근 다툼은 언제였는지 기억하세요?"처럼 되묻는 문장은 처방이 아니다.
+    """
+    bare = strip_quotes(reply)
+    for pat in PRESCRIPTION:
+        for m in re.finditer(pat, bare):
+            if _is_question_sentence(bare, m.start()):
+                continue
+            return True
+    return False
+
+
+def _generalizes_history(reply: str) -> bool:
+    """과거를 일반화하는 서술. 사용자 말을 인용한 부분은 세지 않는다."""
+    return any(re.search(p, strip_quotes(reply)) for p in HISTORY_GENERALIZE)
 
 
 def check_reply(reply: str, state: ConvState) -> list[str]:
@@ -336,9 +383,7 @@ def check_reply(reply: str, state: ConvState) -> list[str]:
         flags.append("P6 위반 의심: 상대방의 의도·성격을 서술")
     if state.phase is Phase.SAFETY and "109" not in reply:
         flags.append("P0 위반: 안전 종료 단계인데 기관 안내 없음")
-    if any(re.search(p, reply) for p in HISTORY_GENERALIZE) and any(
-        re.search(p, reply) for p in PRESCRIPTION
-    ):
+    if _generalizes_history(reply) and _prescribes(reply):
         flags.append("P9 위반 의심: 과거 이력을 근거로 행동을 처방")
     if any(re.search(p, reply) for p in DECIDE_FOR_USER):
         flags.append("P10 위반 의심: 관계의 방향을 챗봇이 결정")
