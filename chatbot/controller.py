@@ -64,15 +64,21 @@ PRESCRIPTION = [r"하세요", r"하시는\s*게\s*좋", r"해야\s*(합니다|�
 # P10: 사용자 대신 결정하는 문장
 DECIDE_FOR_USER = [r"헤어지(세요|시는\s*게|는\s*게\s*맞)", r"그만\s*만나", r"연락(하지\s*마|을\s*끊)", r"만나지\s*마"]
 
-# "그 마음", "그럴 땐" 같은 관형사 '그'에 걸리지 않도록 3인칭 형태만 받는다
-# 조사가 '에게/한테/께'면 상대방은 행동의 대상이지 마음의 주체가 아니다.
-# ("상대방에게 물어보고 싶은 마음"은 사용자의 마음이다)
-THIRD_PARTY_MIND = [
-    r"(그녀|상대방|남친|여친|그\s*사람|그분)(?!에게|한테|께)[가은는이을를도의]?\s*[^.?!]{0,20}(생각|마음|의도|느끼|여기)",
-    r"그(가|는|를)\s*[^.?!]{0,20}(생각|마음|의도|느끼|여기)",
-    r"그런\s*사람",
-    r"이런\s*식으로\s*[^.?!]{0,15}사람",
-]
+# P6: 상대방의 내면을 서술하는지 — 3인칭 명사 바로 뒤의 조사로 격을 읽어 판정한다.
+#
+# 어휘만 보면 "상대방"과 "마음"이 같이 나오는 문장을 다 잡게 되는데,
+# 조사가 격을 결정한다. 주격·주제격·소유격이면 상대방이 마음의 주체이고,
+# 목적격·여격이면 상대방은 행동의 대상일 뿐 마음의 주인은 사용자다.
+#   "상대방의 마음은 떠났어요"        → 소유격, 상대방의 마음  (위반)
+#   "상대방에게 물어보고 싶은 마음"   → 여격,   사용자의 마음  (위반 아님)
+#   "상대방을 대하는 본인의 마음"     → 목적격, 사용자의 마음  (위반 아님)
+THIRD_PARTY_NOUNS = ("그녀", "상대방", "남친", "여친", "그 사람", "그사람", "그분", "애인")
+OBJECT_PARTICLES = ("을", "를", "에게", "한테", "께", "와", "과", "랑", "에", "보다")
+INNER_STATE = ("생각", "마음", "의도", "느끼", "여기")
+# 관형사 '그'("그 마음", "그럴 땐")와 구분하려면 조사가 붙어야 한다
+THIRD_PERSON_GEU = r"그(가|는)"
+# 사람을 유형으로 규정하는 표현
+THIRD_PARTY_LABEL = [r"그런\s*사람", r"이런\s*식으로\s*[^.?!]{0,15}사람"]
 
 # P4: 정리 응답이 갖춰야 할 구조 — "일어난 일"과 "해석"을 나눈 흔적
 RECAP_FACT_MARKERS = [r"일어난\s*일", r"사실", r"확인된"]
@@ -293,6 +299,8 @@ ATTRIBUTION_MARKERS = [
     r"떠오른", r"드신\s*생각", r"받아들", r"해석", r"하신\s*말", r"그려보신", r"느끼신", r"생각이", r"예상",
     # 사용자 쪽에 붙은 마음·생각 ("물어보고 싶은 마음", "드는 생각")
     r"싶은\s*(마음|생각)", r"싶으신", r"드는\s*(마음|생각)",
+    # 마음의 주인이 사용자라고 밝힌 경우 ("본인의 태도나 마음")
+    r"본인", r"스스로", r"사용자님",
 ]
 
 
@@ -323,24 +331,39 @@ def _asserts_about_guess(reply: str) -> bool:
     return False
 
 
+def _mind_subject_positions(text: str):
+    """3인칭 명사 + 조사를 읽어, 마음의 주체로 쓰인 자리만 돌려준다."""
+    for noun in THIRD_PARTY_NOUNS:
+        for m in re.finditer(re.escape(noun), text):
+            if text[m.end() : m.end() + 3].startswith(OBJECT_PARTICLES):
+                continue  # 행동의 대상 — 마음의 주인이 아니다
+            yield m.end()
+    for m in re.finditer(THIRD_PERSON_GEU, text):
+        yield m.end()
+
+
 def _states_third_party_mind(reply: str) -> bool:
     """상대방의 내면을 서술하는 문장만 잡는다.
 
-    제외하는 경우가 둘 있다.
+    조사로 격을 먼저 가린 뒤, 다음 둘은 제외한다.
     - 모른다고 밝히는 문장("아직 확인된 게 아니에요")
-    - 사용자의 말이라고 표시해 인용한 문장(P4 정리 턴이 반드시 쓰는 형태)
+    - 마음의 주인이 사용자라고 표시한 문장("본인의 마음", "떠오른 생각")
     인용부호 안의 내용은 사용자 발화이므로 검사 대상이 아니다.
     """
     bare = strip_quotes(reply)
-    for pat in THIRD_PARTY_MIND:
-        for m in re.finditer(pat, bare):
-            sent = _sentence_at(bare, m.start())
-            window = bare[max(0, m.start() - 20) : m.end() + 40]
-            if any(re.search(u, window) for u in UNKNOWN_MARKERS):
-                continue
-            if any(re.search(a, sent) for a in ATTRIBUTION_MARKERS):
-                continue
-            return True
+    if any(re.search(p, bare) for p in THIRD_PARTY_LABEL):
+        return True
+    for pos in _mind_subject_positions(bare):
+        # 같은 문장 안에서 가까이 붙은 내면 어휘만 본다
+        window = re.split(r"[.?!\n]", bare[pos : pos + 26])[0]
+        if not any(w in window for w in INNER_STATE):
+            continue
+        sent = _sentence_at(bare, pos)
+        if any(re.search(u, sent) for u in UNKNOWN_MARKERS):
+            continue
+        if any(re.search(a, sent) for a in ATTRIBUTION_MARKERS):
+            continue
+        return True
     return False
 
 

@@ -330,3 +330,31 @@ def test_third_party_possessive_still_flagged():
     s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
     assert any("P6" in f for f in check_reply("상대방의 마음은 이미 떠난 것으로 보여요.", s))
     assert any("P6" in f for f in check_reply("상대방이 무슨 의도로 그랬는지 뻔하네요.", s))
+
+
+def test_object_particle_is_not_third_party_mind():
+    """P6 — "상대방을 대하는 본인의 마음"은 사용자의 마음이다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = "연락이 줄어든 걸 알게 된 뒤로, 상대방을 대하는 본인의 태도나 마음에 달라진 게 있으세요?"
+    assert check_reply(r, s) == []
+
+
+def test_third_party_mind_by_case_marker():
+    """조사로 격을 읽어 판정한다 — 주격·소유격은 위반, 목적격·여격은 아니다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    violations = [
+        "상대방의 마음은 이미 떠난 것으로 보여요.",
+        "상대방이 무슨 의도로 그랬는지 뻔하네요.",
+        "상대방 마음이 식은 것 같아요.",
+        "그는 당신을 소중히 여기지 않는 것 같네요.",
+    ]
+    allowed = [
+        "상대방에게 물어보고 싶은 마음은 있으세요?",
+        "상대방을 대하는 본인의 마음은 어떠세요?",
+        "그 마음을 안고 기다리실 수도 있어요.",
+        "상대방이 무슨 생각인지는 아직 확인된 게 아니에요.",
+    ]
+    for r in violations:
+        assert any("P6" in f for f in check_reply(r, s)), r
+    for r in allowed:
+        assert not any("P6" in f for f in check_reply(r, s)), r

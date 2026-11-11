@@ -342,19 +342,20 @@
 
   // ---- controller.py에서 옮긴 검사 규칙 ----
   var ASSERTION = [/분명/, /확실히/, /틀림없/, /당연히/, /인\s*게\s*맞/, /임이\s*분명/];
-  var THIRD_PARTY_MIND = [
-    /(그녀|상대방|남친|여친|그\s*사람|그분)(?!에게|한테|께)[가은는이을를도의]?\s*[^.?!]{0,20}(생각|마음|의도|느끼|여기)/,
-    /그런\s*사람/,
-    /이런\s*식으로\s*[^.?!]{0,15}사람/
-  ];
+  var THIRD_PARTY_MIND_LABEL = [/그런\s*사람/, /이런\s*식으로\s*[^.?!]{0,15}사람/];
   var HISTORY = [/예전에도/, /전에도/, /항상\s*그랬/, /늘\s*그랬/, /매번/, /원래\s*그런/, /반복/, /\d+\s*(년|개월|달)\s*(동안|내내|넘게|째)/];
   var PRESCRIPTION = [/하세요/, /하시는\s*게\s*좋/, /해야\s*(합니다|해요|한다)/, /헤어지/, /(관계|만남|둘\s*사이)[를을]?\s*정리/, /끊는\s*게/, /권합니다/, /추천/];  // "정리하면"은 요약이므로 제외
   var DECIDE = [/헤어지(세요|시는\s*게|는\s*게\s*맞)/, /그만\s*만나/, /연락(하지\s*마|을\s*끊)/, /만나지\s*마/];
   var any = function (list, s) { return list.some(function (re) { return re.test(s); }); };
 
+  var THIRD_PARTY_NOUNS = ["그녀", "상대방", "남친", "여친", "그 사람", "그사람", "그분", "애인"];
+  // 조사가 격을 결정한다. 목적격·여격이면 상대방은 행동의 대상이고 마음의 주인은 사용자다.
+  var OBJECT_PARTICLES = ["을", "를", "에게", "한테", "께", "와", "과", "랑", "에", "보다"];
+  var INNER_STATE = ["생각", "마음", "의도", "느끼", "여기"];
+
   // 인용 제거 — 사용자 말을 옮긴 부분은 챗봇의 서술로 세지 않는다
   function stripQ(t) { return t.replace(/[\u201c"'][^\u201d"']{2,}[\u201d"']/g, " "); }
-  var ATTRIBUTION = [/떠오른/, /드신\s*생각/, /받아들/, /해석/, /하신\s*말/, /느끼신/, /생각이/, /예상/, /싶은\s*(마음|생각)/, /싶으신/, /드는\s*(마음|생각)/];
+  var ATTRIBUTION = [/떠오른/, /드신\s*생각/, /받아들/, /해석/, /하신\s*말/, /느끼신/, /생각이/, /예상/, /싶은\s*(마음|생각)/, /싶으신/, /드는\s*(마음|생각)/, /본인/, /스스로/, /사용자님/];
   var UNKNOWN = [/알\s*수\s*없/, /확인(되지|된\s*게)\s*(않|아니)/, /모르/, /인지보다/, /아직\s*확인/];
   var GUESS_TARGET = [/마음/, /의도/, /생각/, /감정/, /무시/, /사랑/, /식었/, /일부러/];
 
@@ -379,15 +380,26 @@
     return false;
   }
 
-  // 상대 내면 서술. 모른다고 밝힌 문장, 사용자 말로 귀속한 문장은 제외
-  function thirdPartyMind(text, list) {
-    var bare = stripQ(text), i;
-    for (i = 0; i < list.length; i++) {
-      var m = bare.match(list[i]);
-      if (!m) continue;
-      var at = bare.indexOf(m[0]);
-      var s2 = sentAt(bare, at).text;
-      if (any(UNKNOWN, s2) || any(ATTRIBUTION, s2)) continue;
+  // 3인칭 명사 + 조사를 읽어, 마음의 주체로 쓰인 자리만 본다
+  function thirdPartyMind(text, label) {
+    var bare = stripQ(text), i, j;
+    for (i = 0; i < label.length; i++) if (label[i].test(bare)) return true;
+    var spots = [];
+    THIRD_PARTY_NOUNS.forEach(function (noun) {
+      var at = -1;
+      while ((at = bare.indexOf(noun, at + 1)) !== -1) {
+        var end = at + noun.length, tail = bare.slice(end, end + 3);
+        var isObj = OBJECT_PARTICLES.some(function (p) { return tail.indexOf(p) === 0; });
+        if (!isObj) spots.push(end);
+      }
+    });
+    var m, re2 = /그(가|는)/g;
+    while ((m = re2.exec(bare))) spots.push(m.index + m[0].length);
+    for (j = 0; j < spots.length; j++) {
+      var pos = spots[j];
+      var win = bare.slice(pos, pos + 26).split(/[.?!\n]/)[0];
+      var sent = sentAt(bare, pos).text;
+      if (any(UNKNOWN, sent) || any(ATTRIBUTION, sent)) continue;
       return true;
     }
     return false;
@@ -412,7 +424,7 @@
     var q = (text.match(/[?？]/g) || []).length;
     if (q > 1) flags.push("P5 · 질문 " + q + "개");
     if (assertsGuess(text) && opts.missingSlots !== false) flags.push("P3 · 미확인 상태에서 단정");
-    if (thirdPartyMind(text, THIRD_PARTY_MIND)) flags.push("P6 · 상대방의 의도를 서술");
+    if (thirdPartyMind(text, THIRD_PARTY_MIND_LABEL)) flags.push("P6 · 상대방의 의도를 서술");
     if (any(HISTORY, stripQ(text)) && prescribes(text)) flags.push("P9 · 과거를 근거로 처방");
     if (any(DECIDE, text)) flags.push("P10 · 방향을 챗봇이 결정");
     if (opts.safety && text.indexOf("109") === -1) flags.push("P0 · 기관 안내 없음");
@@ -723,15 +735,20 @@
 
   var CRISIS = [/죽고\s*싶/, /죽는\s*게\s*(낫|나을)/, /자살/, /자해/, /손목/, /사라지고\s*싶/, /뛰어내리/, /다\s*끝내고\s*싶/, /때렸/, /맞았/, /폭력/, /협박/, /감금/, /스토킹/];
   var ASSERTION = [/분명/, /확실히/, /틀림없/, /당연히/, /인\s*게\s*맞/];
-  var THIRD_PARTY = [/(그녀|상대방|남친|여친|그\s*사람|그분)(?!에게|한테|께)[가은는이을를도의]?\s*[^.?!]{0,20}(생각|마음|의도|느끼|여기)/, /그(가|는|를)\s*[^.?!]{0,20}(생각|마음|의도|느끼|여기)/, /그런\s*사람/, /이런\s*식으로\s*[^.?!]{0,15}사람/];
+  var THIRD_PARTY_LABEL = [/그런\s*사람/, /이런\s*식으로\s*[^.?!]{0,15}사람/];
   var HISTORY = [/예전에도/, /전에도/, /항상\s*그랬/, /늘\s*그랬/, /매번/, /원래\s*그런/, /반복/, /\d+\s*(년|개월|달)\s*(동안|내내|넘게|째)/];
   var PRESCRIPTION = [/하세요/, /하시는\s*게\s*좋/, /해야\s*(합니다|해요|한다)/, /헤어지/, /(관계|만남|둘\s*사이)[를을]?\s*정리/, /끊는\s*게/, /권합니다/, /추천/];  // "정리하면"은 요약이므로 제외
   var DECIDE = [/헤어지(세요|시는\s*게|는\s*게\s*맞)/, /그만\s*만나/, /연락(하지\s*마|을\s*끊)/, /만나지\s*마/];
   var any = function (l, s) { return l.some(function (r) { return r.test(s); }); };
 
+  var THIRD_PARTY_NOUNS = ["그녀", "상대방", "남친", "여친", "그 사람", "그사람", "그분", "애인"];
+  // 조사가 격을 결정한다. 목적격·여격이면 상대방은 행동의 대상이고 마음의 주인은 사용자다.
+  var OBJECT_PARTICLES = ["을", "를", "에게", "한테", "께", "와", "과", "랑", "에", "보다"];
+  var INNER_STATE = ["생각", "마음", "의도", "느끼", "여기"];
+
   // 인용 제거 — 사용자 말을 옮긴 부분은 챗봇의 서술로 세지 않는다
   function stripQ(t) { return t.replace(/[\u201c"'][^\u201d"']{2,}[\u201d"']/g, " "); }
-  var ATTRIBUTION = [/떠오른/, /드신\s*생각/, /받아들/, /해석/, /하신\s*말/, /느끼신/, /생각이/, /예상/, /싶은\s*(마음|생각)/, /싶으신/, /드는\s*(마음|생각)/];
+  var ATTRIBUTION = [/떠오른/, /드신\s*생각/, /받아들/, /해석/, /하신\s*말/, /느끼신/, /생각이/, /예상/, /싶은\s*(마음|생각)/, /싶으신/, /드는\s*(마음|생각)/, /본인/, /스스로/, /사용자님/];
   var UNKNOWN = [/알\s*수\s*없/, /확인(되지|된\s*게)\s*(않|아니)/, /모르/, /인지보다/, /아직\s*확인/];
   var GUESS_TARGET = [/마음/, /의도/, /생각/, /감정/, /무시/, /사랑/, /식었/, /일부러/];
 
@@ -756,15 +773,26 @@
     return false;
   }
 
-  // 상대 내면 서술. 모른다고 밝힌 문장, 사용자 말로 귀속한 문장은 제외
-  function thirdPartyMind(text, list) {
-    var bare = stripQ(text), i;
-    for (i = 0; i < list.length; i++) {
-      var m = bare.match(list[i]);
-      if (!m) continue;
-      var at = bare.indexOf(m[0]);
-      var s2 = sentAt(bare, at).text;
-      if (any(UNKNOWN, s2) || any(ATTRIBUTION, s2)) continue;
+  // 3인칭 명사 + 조사를 읽어, 마음의 주체로 쓰인 자리만 본다
+  function thirdPartyMind(text, label) {
+    var bare = stripQ(text), i, j;
+    for (i = 0; i < label.length; i++) if (label[i].test(bare)) return true;
+    var spots = [];
+    THIRD_PARTY_NOUNS.forEach(function (noun) {
+      var at = -1;
+      while ((at = bare.indexOf(noun, at + 1)) !== -1) {
+        var end = at + noun.length, tail = bare.slice(end, end + 3);
+        var isObj = OBJECT_PARTICLES.some(function (p) { return tail.indexOf(p) === 0; });
+        if (!isObj) spots.push(end);
+      }
+    });
+    var m, re2 = /그(가|는)/g;
+    while ((m = re2.exec(bare))) spots.push(m.index + m[0].length);
+    for (j = 0; j < spots.length; j++) {
+      var pos = spots[j];
+      var win = bare.slice(pos, pos + 26).split(/[.?!\n]/)[0];
+      var sent = sentAt(bare, pos).text;
+      if (any(UNKNOWN, sent) || any(ATTRIBUTION, sent)) continue;
       return true;
     }
     return false;
@@ -820,7 +848,7 @@
     } else if (q > 1) f.push("P5 · 질문 " + q + "개");
     if (phase === 3 && !st.recapConfirmed) f.push("P4 · 정리 확인 없이 상담");
     if (assertsGuess(text)) f.push("P3 · 단정 표현");
-    if (thirdPartyMind(text, THIRD_PARTY)) f.push("P6 · 상대방의 의도를 서술");
+    if (thirdPartyMind(text, THIRD_PARTY_LABEL)) f.push("P6 · 상대방의 의도를 서술");
     if (any(HISTORY, stripQ(text)) && prescribes(text)) f.push("P9 · 과거를 근거로 처방");
     if (any(DECIDE, text)) f.push("P10 · 방향을 챗봇이 결정");
     if (safety && text.indexOf("109") === -1) f.push("P0 · 기관 안내 없음");
