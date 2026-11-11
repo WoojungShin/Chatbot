@@ -238,3 +238,15 @@ def test_saying_we_cannot_know_is_not_third_party_mind():
     s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
     r = "상대방이 무슨 생각인지는 아직 확인된 게 아니에요. 지금 느껴지는 감정은 어떤 건가요?"
     assert not any("P6" in f for f in check_reply(r, s))
+
+
+def test_demonstrative_geu_is_not_third_party():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert check_reply("그 마음을 안고 기다리실 수도 있어요. 어느 쪽이 편하세요?", s) == []
+    assert check_reply("그럴 땐 어떻게 하실 생각이세요?", s) == []
+
+
+def test_real_third_party_mind_still_flagged():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert any("P6" in f for f in check_reply("그는 당신을 소중히 여기지 않는 것 같네요.", s))
+    assert any("P6" in f for f in check_reply("상대방 마음이 식은 것 같아요.", s))
