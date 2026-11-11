@@ -316,3 +316,17 @@ def test_summarizing_is_not_prescription():
 def test_ending_the_relationship_still_flagged():
     s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
     assert any("P9" in f for f in check_reply("매번 그랬으니 이제 관계를 정리하는 쪽이 낫습니다.", s))
+
+
+def test_dative_particle_is_not_third_party_mind():
+    """P6 — "상대방에게 ... 싶은 마음"은 사용자의 마음이다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = ("꼭 지금 방향을 정하지 않아도 괜찮아요. 연락이 줄어든 것에 대해 "
+         "상대방에게 그냥 물어보고 싶은 마음은 있으신가요?")
+    assert check_reply(r, s) == []
+
+
+def test_third_party_possessive_still_flagged():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert any("P6" in f for f in check_reply("상대방의 마음은 이미 떠난 것으로 보여요.", s))
+    assert any("P6" in f for f in check_reply("상대방이 무슨 의도로 그랬는지 뻔하네요.", s))
