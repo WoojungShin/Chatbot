@@ -40,3 +40,20 @@ class ChatClient:
         ) as s:
             yield from s.text_stream
             self.last_usage = s.get_final_message().usage
+
+    def complete(
+        self,
+        system_prompt: str,
+        messages: list[dict],
+        cfg: GenConfig | None = None,
+    ) -> str:
+        """한 번에 받아온다. 스트리밍과 달리 중간에 끊겨 유실될 조각이 없다."""
+        cfg = cfg or GenConfig()
+        msg = self._client.messages.create(
+            model=cfg.model,
+            max_tokens=cfg.max_tokens,
+            system=[{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=messages,
+        )
+        self.last_usage = msg.usage
+        return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")

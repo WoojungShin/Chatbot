@@ -85,6 +85,7 @@ if "messages" not in st.session_state:
     st.session_state.turns_used = 0
     st.session_state.replay_step = 0
     st.session_state.replay_idx = 0
+    st.session_state.pending = False
 
 try:
     persona = load_persona(PERSONA_DIR)
@@ -201,7 +202,12 @@ with st.sidebar:
             ["claude-sonnet-5", "claude-haiku-4-5"],
             index=0 if default_model() != "claude-haiku-4-5" else 1,
         )
-        max_tokens = st.number_input("Max tokens", 64, MAX_TOKENS_CAP, 512, 64)
+        max_tokens = st.number_input("Max tokens", 64, MAX_TOKENS_CAP, 800, 64)
+        use_stream = st.checkbox(
+            "스트리밍", value=False,
+            help="켜면 글자가 흐르듯 나오지만, 연결이 한 번 끊기면 그 응답이 중간에 "
+                 "잘릴 수 있습니다. 끄면 한 번에 받아서 더 안정적입니다.",
+        )
 
         if st.button("대화 초기화", use_container_width=True):
             st.session_state.messages = []
@@ -209,6 +215,7 @@ with st.sidebar:
             st.session_state.flags = {}
             st.session_state.intake_done = False
             st.session_state.turns_used = 0
+            st.session_state.pending = False
             st.rerun()
 
         st.divider()
@@ -294,7 +301,18 @@ for i, m in enumerate(st.session_state.messages):
         for flag in st.session_state.flags.get(i, []):
             st.warning(flag, icon="⚠️")
 
-if user_input := st.chat_input("메시지를 입력하세요"):
+# 응답을 받는 동안에는 입력창을 닫는다.
+# 열어두면 스트리밍 중에 들어온 입력이 스크립트를 다시 돌리고, 진행 중이던
+# st.write_stream이 중단되어 응답이 화면에만 남고 세션에는 저장되지 않는다.
+# (사용자 발화가 두 번 쌓이고 봇 응답이 중간에 잘린 것처럼 보이던 원인)
+pending = bool(st.session_state.get("pending"))
+
+# 응답을 기다릴 발화가 실제로 남아 있는지 확인 — 없으면 플래그를 내린다
+if pending and not (st.session_state.messages and st.session_state.messages[-1]["role"] == "user"):
+    st.session_state.pending = False
+    pending = False
+
+if user_input := st.chat_input("메시지를 입력하세요", disabled=pending):
     if len(user_input) > MAX_INPUT_CHARS:
         st.warning(f"한 번에 {MAX_INPUT_CHARS}자까지 보낼 수 있습니다. 나눠서 보내주세요.")
         st.stop()
@@ -306,21 +324,23 @@ if user_input := st.chat_input("메시지를 입력하세요"):
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    st.session_state.pending = True
+    st.rerun()  # 입력창을 닫은 상태로 다시 그린 뒤에 호출한다
 
+if pending:
+    user_input = st.session_state.messages[-1]["content"]
     cs = st.session_state.state
 
     # 위기 감지는 컨트롤러 모드에서만 작동한다 (baseline과의 차이를 보여주는 지점)
     if controlled:
         advance(cs, user_input)
         if cs.phase is Phase.SAFETY:
-            with st.chat_message("assistant"):
-                st.markdown(SAFETY_REPLY)
             st.session_state.messages.append({"role": "assistant", "content": SAFETY_REPLY})
-            st.stop()
+            st.session_state.pending = False
+            st.rerun()
 
     if not api_key:
+        st.session_state.pending = False
         st.warning("ANTHROPIC_API_KEY를 .env 또는 사이드바에 입력하세요.")
         st.stop()
 
@@ -330,10 +350,24 @@ if user_input := st.chat_input("메시지를 입력하세요"):
 
     with st.chat_message("assistant"):
         try:
-            reply = st.write_stream(client.stream(system, st.session_state.messages, cfg))
-        except anthropic.APIError as e:
+            if use_stream:
+                reply = st.write_stream(client.stream(system, st.session_state.messages, cfg))
+            else:
+                with st.spinner("응답을 받고 있습니다…"):
+                    reply = client.complete(system, st.session_state.messages, cfg)
+                st.markdown(reply)
+        except Exception as e:  # noqa: BLE001 — 재실행 예외(BaseException)는 통과시킨다
             st.session_state.messages.pop()
-            st.error(f"API 오류: {e}")
+            st.session_state.pending = False
+            kind = "API 오류" if isinstance(e, anthropic.APIError) else "호출 실패"
+            st.error(f"{kind}: {e}")
+            st.stop()
+        if isinstance(reply, list):  # 조각이 섞여 오면 list로 돌아온다
+            reply = "".join(str(x) for x in reply)
+        if not reply.strip():
+            st.session_state.messages.pop()
+            st.session_state.pending = False
+            st.error("응답이 비어 있습니다. 다시 보내주세요.")
             st.stop()
         if controlled:
             note_recap_given(cs, reply)  # 정리를 내놓았으면 Phase2R로 올린 뒤 검사한다
@@ -349,4 +383,5 @@ if user_input := st.chat_input("메시지를 입력하세요"):
         st.session_state.spent += estimate_cost(model, client.last_usage)
     if controlled:
         note_question_asked(cs, reply)
+    st.session_state.pending = False
     st.rerun()
