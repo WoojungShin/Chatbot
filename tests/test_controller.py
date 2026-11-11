@@ -302,3 +302,17 @@ def test_concrete_wording_help_is_allowed():
 def test_relationship_direction_still_flagged():
     s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
     assert any("P10" in f for f in check_reply("연락을 끊는 게 맞습니다.", s))
+
+
+def test_summarizing_is_not_prescription():
+    """P9 — "정리하면"은 요약이지 관계를 정리하라는 말이 아니다."""
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = ("지금까지 확인된 걸 정리하면: 연락이 줄어든 패턴이 3개월간 반복됐고, "
+         "그때 나쁜 사람으로 몰리는 기분이 들었다는 것까지가 사실이에요. "
+         "지금 가장 크게 남아있는 감정은 어떤 건가요?")
+    assert check_reply(r, s) == []
+
+
+def test_ending_the_relationship_still_flagged():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    assert any("P9" in f for f in check_reply("매번 그랬으니 이제 관계를 정리하는 쪽이 낫습니다.", s))
