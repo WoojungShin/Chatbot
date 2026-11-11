@@ -152,13 +152,20 @@ def advance(state: ConvState, user_text: str) -> ConvState:
 
 
 def note_question_asked(state: ConvState, reply: str) -> None:
-    if state.phase is Phase.PHASE2_PROBE and "?" in reply:
+    if state.phase is Phase.PHASE2_PROBE and count_questions(reply) > 0:
         state.probe_questions += 1
 
 
 def note_recap_given(state: ConvState, reply: str) -> None:
-    """Phase2R에서 정리를 제시했으면 횟수를 센다."""
+    """정리를 제시했으면 횟수를 센다.
+
+    모델이 지시보다 먼저 정리를 내놓는 일이 있다(예시를 보고 따라 한다).
+    그 경우 Phase2에 있더라도 Phase2R로 올려서, 다음 사용자 발화를 확인으로 받는다.
+    """
     if state.phase is Phase.PHASE2R_RECAP:
+        state.recap_rounds += 1
+    elif state.phase is Phase.PHASE2_PROBE and looks_like_recap(reply):
+        state.phase = Phase.PHASE2R_RECAP
         state.recap_rounds += 1
 
 
@@ -219,6 +226,28 @@ FIRST_PERSON = [("저를", "나를"), ("저는", "나는"), ("저도", "나도")
                 ("저랑", "나랑"), ("저한테", "나한테"), ("저에게", "나에게"), ("제가", "내가")]
 
 
+QUOTE_RE = re.compile(r"[\"“']([^\"”']{2,})[\"”']")
+
+
+def strip_quotes(text: str) -> str:
+    """인용부호 안의 내용을 뺀 텍스트. 사용자 말을 인용한 물음표를 세지 않기 위해 쓴다."""
+    return QUOTE_RE.sub(" ", text)
+
+
+def count_questions(reply: str) -> int:
+    t = strip_quotes(reply)
+    return t.count("?") + t.count("？")
+
+
+def looks_like_recap(reply: str) -> bool:
+    """모델이 지시 전에 스스로 정리를 내놓았는지 본다."""
+    return (
+        _has_marker(reply, RECAP_FACT_MARKERS)
+        and _has_marker(reply, RECAP_INTERP_MARKERS)
+        and _has_marker(reply, RECAP_ASK_MARKERS)
+    )
+
+
 def _normalize(text: str) -> str:
     for a, b in FIRST_PERSON:
         text = text.replace(a, b)
@@ -243,10 +272,43 @@ def unsupported_quotes(reply: str, said: list[str]) -> list[str]:
     return out
 
 
+# 단정·내면 서술 판정을 문맥으로 좁히는 보조 패턴
+GUESS_TARGET = [r"마음", r"의도", r"생각", r"감정", r"무시", r"사랑", r"식었", r"일부러"]
+UNKNOWN_MARKERS = [r"알\s*수\s*없", r"확인(되지|된\s*게)\s*(않|아니)", r"모르", r"인지보다", r"아직\s*확인"]
+
+
+def _sentence_at(text: str, idx: int) -> str:
+    start = max((text.rfind(ch, 0, idx) for ch in ".!?\n"), default=-1) + 1
+    ends = [p for p in (text.find(ch, idx) for ch in ".!?\n") if p != -1]
+    return text[start : (min(ends) if ends else len(text))]
+
+
+def _asserts_about_guess(reply: str) -> bool:
+    """'분명/확실히'가 같은 문장 안에서 내면·추측을 수식할 때만 단정으로 본다.
+
+    사실에 붙은 경우("평소와는 확실히 다른 상황이네요")는 위반으로 보지 않는다.
+    """
+    for m in re.finditer("|".join(ASSERTION_PATTERNS), reply):
+        sent = _sentence_at(reply, m.start())
+        if any(re.search(t, sent) for t in GUESS_TARGET):
+            return True
+    return False
+
+
+def _states_third_party_mind(reply: str) -> bool:
+    """상대방의 내면을 서술하는 문장. 모른다고 밝히는 문장은 제외한다."""
+    for pat in THIRD_PARTY_MIND:
+        for m in re.finditer(pat, reply):
+            window = reply[max(0, m.start() - 20) : m.end() + 40]
+            if not any(re.search(u, window) for u in UNKNOWN_MARKERS):
+                return True
+    return False
+
+
 def check_reply(reply: str, state: ConvState) -> list[str]:
     """응답 사후 검사. 규칙 위반 의심 항목을 문자열로 돌려준다."""
     flags = []
-    q = reply.count("?") + reply.count("？")
+    q = count_questions(reply)
 
     if state.phase is Phase.PHASE2R_RECAP:
         # P4 판정 ① 정리가 '일어난 일'과 '해석'으로 나뉘어 있는가
@@ -255,7 +317,7 @@ def check_reply(reply: str, state: ConvState) -> list[str]:
         # P4 판정 ② 사용자가 하지 않은 말이 들어갔는가
         extra = unsupported_quotes(reply, state.said)
         if extra:
-            flags.append(f"P4 위반: 사용자가 하지 않은 말 인용 ({', '.join(extra[:2])})")
+            flags.append(f"P4 확인 필요: 인용이 사용자 표현과 다름 ({', '.join(extra[:2])})")
         # 정리 뒤에는 확인 질문이 있어야 한다
         if not _has_marker(reply, RECAP_ASK_MARKERS):
             flags.append("P4 위반: 맞는지 확인하는 질문 없음")
@@ -266,9 +328,9 @@ def check_reply(reply: str, state: ConvState) -> list[str]:
     if state.phase is Phase.PHASE3_ADVISE and not state.recap_confirmed:
         flags.append("P4 위반: 정리 확인 없이 상담 시작")
 
-    if any(re.search(p, reply) for p in ASSERTION_PATTERNS) and state.missing_probe():
+    if _asserts_about_guess(reply) and state.missing_probe():
         flags.append("P3 위반 의심: 미확인 상태에서 단정 표현")
-    if any(re.search(p, reply) for p in THIRD_PARTY_MIND):
+    if _states_third_party_mind(reply):
         flags.append("P6 위반 의심: 상대방의 의도·성격을 서술")
     if state.phase is Phase.SAFETY and "109" not in reply:
         flags.append("P0 위반: 안전 종료 단계인데 기관 안내 없음")

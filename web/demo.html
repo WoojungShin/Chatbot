@@ -696,9 +696,14 @@
     return any(CONFIRM, t);
   }
 
+  function looksLikeRecap(t) {
+    return any(RECAP_FACT, t) && any(RECAP_INTERP, t) && any(RECAP_ASK, t);
+  }
+
   function checkReply(text, safety, phase) {
     var f = [];
-    var q = (text.match(/[?？]/g) || []).length;
+    var bare = text.replace(/[\u201c"'][^\u201d"']{2,}[\u201d"']/g, " ");
+    var q = (bare.match(/[?？]/g) || []).length;
     if (phase === 2) {
       if (!(any(RECAP_FACT, text) && any(RECAP_INTERP, text))) f.push("P4 · 일어난 일과 해석을 안 나눔");
       var extra = unsupportedQuotes(text, st.said);
@@ -895,6 +900,7 @@
 
     if (ok) {
       turns.push({ role: "assistant", content: reply });
+      if (st.phase === 1 && looksLikeRecap(reply)) { st.phase = 2; st.recapRounds += 1; }
       addChips(slot.node, checkReply(reply, false, st.phase));
       if (st.phase === 1 && /[?？]/.test(reply)) st.q += 1;
       if (st.phase === 2) st.recapRounds += 1;

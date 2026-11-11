@@ -324,6 +324,8 @@ if user_input := st.chat_input("메시지를 입력하세요"):
             st.session_state.messages.pop()
             st.error(f"API 오류: {e}")
             st.stop()
+        if controlled:
+            note_recap_given(cs, reply)  # 정리를 내놓았으면 Phase2R로 올린 뒤 검사한다
         flags = check_reply(reply, cs) if controlled else []
         for flag in flags:
             st.warning(flag, icon="⚠️")
@@ -335,6 +337,5 @@ if user_input := st.chat_input("메시지를 입력하세요"):
     if client.last_usage:
         st.session_state.spent += estimate_cost(model, client.last_usage)
     if controlled:
-        note_recap_given(cs, reply)
         note_question_asked(cs, reply)
     st.rerun()

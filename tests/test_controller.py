@@ -158,7 +158,7 @@ def test_recap_with_invented_quote_is_flagged():
     s = recap_state()
     bad = RECAP.replace('"평소엔 한두 시간이면 왔다"', '"상대가 일부러 피한다"')
     flags = check_reply(bad, s)
-    assert any("하지 않은 말" in f for f in flags)
+    assert any("인용이 사용자 표현과 다름" in f for f in flags)
 
 
 def test_recap_without_question_is_flagged():
@@ -200,3 +200,41 @@ def test_note_recap_given_counts_only_in_recap():
 def test_state_block_lists_user_words_in_recap():
     b = state_block(recap_state())
     assert "사용자가 실제로 한 말" in b and SAID[0] in b
+
+
+# ---------- 11/11 실제 로그에서 드러난 버그 ----------
+
+def test_quoted_user_question_not_counted_as_bot_question():
+    s = controlled_state(phase=Phase.PHASE2_PROBE)
+    r = '정리해 볼게요. "저를 무시하는 거죠?"는 떠올리신 해석이고요. 제가 나눈 게 맞을까요?'
+    assert not any("P5" in f for f in check_reply(r, s))
+
+
+def test_model_recap_before_directive_promotes_phase():
+    s = controlled_state(phase=Phase.PHASE2_PROBE, said=["어제부터 답장이 없어요"])
+    r = '정리해 볼게요. 일어난 일은 "어제부터 답장이 없다"예요. "무시한다"는 받아들인 부분이고요. 제가 나눈 게 맞을까요?'
+    note_recap_given(s, r)
+    assert s.phase is Phase.PHASE2R_RECAP and s.recap_rounds == 1
+
+
+def test_confirmation_after_self_initiated_recap_reaches_advise():
+    s = controlled_state(phase=Phase.PHASE2_PROBE, said=["어제부터 답장이 없어요"])
+    note_recap_given(s, '일어난 일은 "어제부터 답장이 없다"예요. 받아들인 해석이고요. 맞나요?')
+    advance(s, "네")
+    assert s.phase is Phase.PHASE3_ADVISE and s.recap_confirmed
+
+
+def test_assertion_about_fact_is_not_flagged():
+    s = controlled_state(phase=Phase.PHASE2_PROBE)
+    assert check_reply("평소와는 확실히 다른 상황이네요. 특별한 일정이 있었나요?", s) == []
+
+
+def test_assertion_about_inner_state_is_flagged():
+    s = controlled_state(phase=Phase.PHASE2_PROBE)
+    assert any("P3" in f for f in check_reply("상대방 마음이 확실히 식은 겁니다.", s))
+
+
+def test_saying_we_cannot_know_is_not_third_party_mind():
+    s = controlled_state(phase=Phase.PHASE3_ADVISE, recap_confirmed=True)
+    r = "상대방이 무슨 생각인지는 아직 확인된 게 아니에요. 지금 느껴지는 감정은 어떤 건가요?"
+    assert not any("P6" in f for f in check_reply(r, s))
