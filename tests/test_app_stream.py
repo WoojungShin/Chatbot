@@ -98,3 +98,71 @@ def test_no_duplicate_user_message(at):
     at.chat_input[0].set_value("연락이 줄은 것 자체가 계기인 것 같아요").run()
     roles = [m["role"] for m in at.session_state["messages"]]
     assert roles == ["user", "assistant", "user", "assistant"], roles
+
+
+class _EmptyCreate:
+    """텍스트 블록이 없는 응답 — stop_reason만 돌아오는 경우."""
+    def __init__(self):
+        self.content = []
+        self.stop_reason = "max_tokens"
+        self.usage = types.SimpleNamespace(
+            input_tokens=100, output_tokens=0,
+            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+        )
+
+
+def test_empty_reply_restores_state(monkeypatch):
+    """호출이 실패하면 메시지와 컨트롤러 상태를 함께 되돌린다."""
+    monkeypatch.setattr(
+        anthropic, "Anthropic",
+        lambda *a, **k: types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=lambda **kw: _EmptyCreate())),
+    )
+    t = AppTest.from_file(APP, default_timeout=60)
+    t.secrets["ANTHROPIC_API_KEY"] = "sk-ant-test"
+    t.run()
+    t.session_state["intake_done"] = True
+    t.session_state["state"].slots = dict(SLOTS)
+    t.run()
+
+    t.chat_input[0].set_value("한 달 전부터 만날 때마다 다퉈요").run()
+
+    # 메시지는 되돌아가고, 질문 횟수와 said도 늘지 않는다
+    assert t.session_state["messages"] == []
+    st_ = t.session_state["state"]
+    assert st_.probe_questions == 0
+    assert st_.said == []
+    assert t.session_state["pending"] is False
+    assert t.chat_input[0].proto.disabled is False
+    # 왜 비었는지 화면에 남는다
+    assert any("stop_reason=max_tokens" in e.value for e in t.error)
+
+
+def test_resend_after_failure_does_not_double_count(monkeypatch):
+    """실패 후 같은 말을 다시 보내도 advance()가 두 번 적용되지 않는다."""
+    box = {"fail": True}
+
+    def create(**kw):
+        if box["fail"]:
+            box["fail"] = False
+            return _EmptyCreate()
+        return _create(**kw)
+
+    monkeypatch.setattr(
+        anthropic, "Anthropic",
+        lambda *a, **k: types.SimpleNamespace(
+            messages=types.SimpleNamespace(create=create)),
+    )
+    t = AppTest.from_file(APP, default_timeout=60)
+    t.secrets["ANTHROPIC_API_KEY"] = "sk-ant-test"
+    t.run()
+    t.session_state["intake_done"] = True
+    t.session_state["state"].slots = dict(SLOTS)
+    t.run()
+
+    msg = "한 달 전부터 만날 때마다 다퉈요"
+    t.chat_input[0].set_value(msg).run()   # 실패
+    t.chat_input[0].set_value(msg).run()   # 재전송 → 성공
+
+    assert [m["content"] for m in t.session_state["messages"]] == [msg, REPLY]
+    assert t.session_state["state"].said.count(msg) == 1

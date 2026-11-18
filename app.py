@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 from datetime import datetime
@@ -32,7 +33,7 @@ from chatbot import (
     note_question_asked,
     state_block,
 )
-from chatbot.client import default_model
+from chatbot.client import EmptyReply, default_model
 from chatbot.scenarios import PHASE_NAMES, SCENARIOS
 
 load_dotenv()
@@ -305,6 +306,11 @@ for i, m in enumerate(st.session_state.messages):
 # 열어두면 스트리밍 중에 들어온 입력이 스크립트를 다시 돌리고, 진행 중이던
 # st.write_stream이 중단되어 응답이 화면에만 남고 세션에는 저장되지 않는다.
 # (사용자 발화가 두 번 쌓이고 봇 응답이 중간에 잘린 것처럼 보이던 원인)
+if st.session_state.get("failed"):
+    why, text = st.session_state.pop("failed")
+    st.error(why)
+    st.info(f"보내신 메시지는 그대로 두었습니다 — {text}")
+
 pending = bool(st.session_state.get("pending"))
 
 # 응답을 기다릴 발화가 실제로 남아 있는지 확인 — 없으면 플래그를 내린다
@@ -331,6 +337,20 @@ if pending:
     user_input = st.session_state.messages[-1]["content"]
     cs = st.session_state.state
 
+    # 호출이 실패하면 사용자 메시지를 되돌린다. advance()가 이미 phase와 said를
+    # 바꿔놓은 뒤이므로 컨트롤러 상태도 같이 되돌려야 한다. 안 그러면 같은 발화를
+    # 다시 보낼 때 advance()가 두 번 적용돼 질문 횟수와 said가 중복된다.
+    before = copy.deepcopy(cs)
+
+    def undo_turn(msg: str) -> None:
+        st.session_state.messages.pop()
+        st.session_state.state = before
+        st.session_state.pending = False
+        # 여기서 st.stop()으로 끝내면 입력창이 비활성 상태 그대로 멈춘다.
+        # 오류는 세션에 남겨 두고 다시 그려야 입력창이 열린다.
+        st.session_state.failed = (msg, user_input)
+        st.rerun()
+
     # 위기 감지는 컨트롤러 모드에서만 작동한다 (baseline과의 차이를 보여주는 지점)
     if controlled:
         advance(cs, user_input)
@@ -356,19 +376,15 @@ if pending:
                 with st.spinner("응답을 받고 있습니다…"):
                     reply = client.complete(system, st.session_state.messages, cfg)
                 st.markdown(reply)
+        except EmptyReply as e:  # 원인을 그대로 보여준다
+            undo_turn(f"{e}")
         except Exception as e:  # noqa: BLE001 — 재실행 예외(BaseException)는 통과시킨다
-            st.session_state.messages.pop()
-            st.session_state.pending = False
             kind = "API 오류" if isinstance(e, anthropic.APIError) else "호출 실패"
-            st.error(f"{kind}: {e}")
-            st.stop()
+            undo_turn(f"{kind}: {e}")
         if isinstance(reply, list):  # 조각이 섞여 오면 list로 돌아온다
             reply = "".join(str(x) for x in reply)
         if not reply.strip():
-            st.session_state.messages.pop()
-            st.session_state.pending = False
-            st.error("응답이 비어 있습니다. 다시 보내주세요.")
-            st.stop()
+            undo_turn("응답이 중간에 끊겼습니다 (스트리밍). 사이드바에서 스트리밍을 꺼보세요.")
         if controlled:
             note_recap_given(cs, reply)  # 정리를 내놓았으면 Phase2R로 올린 뒤 검사한다
         flags = check_reply(reply, cs) if controlled else []

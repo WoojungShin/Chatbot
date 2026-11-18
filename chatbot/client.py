@@ -12,6 +12,10 @@ def default_model() -> str:
     return os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 
 
+class EmptyReply(RuntimeError):
+    """모델이 텍스트를 하나도 돌려주지 않았다. 원인을 메시지에 담는다."""
+
+
 @dataclass
 class GenConfig:
     model: str = field(default_factory=default_model)
@@ -56,4 +60,13 @@ class ChatClient:
             messages=messages,
         )
         self.last_usage = msg.usage
-        return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        if not text.strip():
+            # 왜 비었는지 남긴다. stop_reason이 max_tokens면 상한이 너무 낮은 것이고,
+            # refusal이면 API가 거절한 것이다. 둘은 대응이 다르다.
+            kinds = [getattr(b, "type", "?") for b in msg.content] or ["(없음)"]
+            raise EmptyReply(
+                f"텍스트가 없는 응답 (stop_reason={msg.stop_reason}, "
+                f"블록={kinds}, output_tokens={msg.usage.output_tokens})"
+            )
+        return text

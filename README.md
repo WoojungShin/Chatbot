@@ -173,6 +173,19 @@ Streamlit은 스크립트를 중단할 때 `BaseException`(`StopException` / `Re
 `pending`이 남았는데 마지막 메시지가 사용자 발화가 아니면 플래그를 내려서,
 입력창이 영구히 잠기는 상태를 막는다. `tests/test_app_stream.py`가 이 다섯 가지를 검사한다.
 
+### 호출 실패 시 (11/18 수정)
+
+응답이 비어 돌아오면 `chatbot/client.EmptyReply`가 `stop_reason`과 블록 종류를 담아 올라온다.
+`max_tokens`면 상한이 낮은 것이고 `refusal`이면 API가 거절한 것이라 대응이 다르므로, 원인을 화면에 그대로 띄운다.
+
+실패하면 `undo_turn()`이 사용자 메시지와 **컨트롤러 상태를 함께 되돌린다.** `advance()`가 이미
+phase, `probe_questions`, `said`를 바꿔놓은 뒤이기 때문이다. 되돌리지 않으면 같은 말을 다시 보낼 때
+`advance()`가 두 번 적용돼 질문 횟수가 중복되고 `said`에 같은 발화가 두 줄 쌓인다.
+
+되돌린 뒤에는 `st.stop()`이 아니라 `st.rerun()`을 한다. `st.stop()`으로 끝내면 입력창이
+`disabled=True`인 채로 멈춰서 사용자가 잠긴다. 오류 문구는 `session_state["failed"]`에 넘겨
+다시 그린 화면에서 띄운다.
+
 ### 대화 로그
 
 사이드바의 **대화 로그 내려받기**로 JSONL을 받는다. 배포 환경에서는 서버에 파일을 써도
